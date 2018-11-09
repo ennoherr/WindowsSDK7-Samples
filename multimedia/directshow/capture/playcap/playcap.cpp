@@ -16,9 +16,16 @@
 #define _WIN32_WINNT 0x0500
 
 #include <windows.h>
+#include <tchar.h>
 #include <dshow.h>
 #include <stdio.h>
 #include <strsafe.h>
+
+#include <string>
+#include <vector>
+
+#include "UniConvert.h"
+#include "CommandLine.h"
 
 #include "PlayCap.h"
 
@@ -30,6 +37,14 @@
 // To enable registration in this sample, define REGISTER_FILTERGRAPH.
 //
 #define REGISTER_FILTERGRAPH
+
+#ifndef  tstring
+#ifdef UNICODE
+#define tstring std::wstring
+#else
+#define tstring std::string
+#endif
+#endif // ! tstring
 
 
 //
@@ -45,6 +60,10 @@ IGraphBuilder * g_pGraph = NULL;
 ICaptureGraphBuilder2 * g_pCapture = NULL;
 PLAYSTATE g_psCurrent = Stopped;
 
+// cmd line args
+tstring g_VCapFriendlyName = _T("");
+tstring g_VCapDevicePath = _T("");
+int g_VCapIndex = 0;
 
 HRESULT CaptureVideo()
 {
@@ -69,7 +88,7 @@ HRESULT CaptureVideo()
 
     // Use the system device enumerator and class enumerator to find
     // a video capture/preview device, such as a desktop USB video camera.
-    hr = FindCaptureDevice(&pSrcFilter);
+    hr = FindCaptureDevice(&pSrcFilter, g_VCapFriendlyName.c_str(), g_VCapDevicePath.c_str(), g_VCapIndex);
     if (FAILED(hr))
     {
         // Don't display a message because FindCaptureDevice will handle it
@@ -139,9 +158,9 @@ HRESULT CaptureVideo()
 }
 
 
-HRESULT FindCaptureDevice(IBaseFilter ** ppSrcFilter)
+HRESULT FindCaptureDevice(IBaseFilter ** ppSrcFilter, const TCHAR *szFriendlyName, const TCHAR *szDevicePath, int iIndex)
 {
-    HRESULT hr = S_OK;
+    HRESULT hr = E_FAIL;
     IBaseFilter * pSrc = NULL;
     IMoniker* pMoniker =NULL;
     ICreateDevEnum *pDevEnum =NULL;
@@ -192,18 +211,94 @@ HRESULT FindCaptureDevice(IBaseFilter ** ppSrcFilter)
 
 	if (SUCCEEDED(hr))
 	{
-		hr = pClassEnum->Next (1, &pMoniker, NULL);
-		if (hr == S_FALSE)
+		//hr = pClassEnum->Next (1, &pMoniker, NULL);
+		//if (hr == S_FALSE)
+		//{
+	 //       Msg(TEXT("Unable to access video capture device!"));   
+		//	hr = E_FAIL;
+		//}
+
+		pClassEnum->Reset();
+		ULONG cFetched;
+		int index = 0;
+		bool found = false;
+		tstring capDevices = _T("\0");
+		
+		while (hr = pClassEnum->Next(1, &pMoniker, &cFetched), hr == S_OK)
 		{
-	        Msg(TEXT("Unable to access video capture device!"));   
+			IPropertyBag *pBag = 0;
+
+			hr = pMoniker->BindToStorage(0, 0, IID_IPropertyBag, (void **)&pBag);
+			if (SUCCEEDED(hr))
+			{
+				VARIANT var;
+				var.vt = VT_BSTR;
+
+				capDevices += tstring(_T("[")) + CUniConvert::int2ts(++index) + tstring(_T("] "));
+
+				if (iIndex == index)
+				{
+					SAFE_RELEASE(pBag);
+					pMoniker->AddRef();
+
+					found = true;
+					break;
+				}
+
+				hr = pBag->Read(_T("FriendlyName"), &var, NULL);
+				if (hr == NOERROR)
+				{
+					if (szFriendlyName && _tcscmp(szFriendlyName, var.bstrVal) == 0)
+					{
+						SAFE_RELEASE(pBag);
+						pMoniker->AddRef();
+
+						found = true;
+						break;
+					}
+
+					capDevices += var.bstrVal + tstring(_T(" - "));
+				}
+
+				hr = pBag->Read(_T("DevicePath"), &var, NULL);
+				if (hr == NOERROR)
+				{
+					if (szDevicePath && _tcscmp(szDevicePath, var.bstrVal) == 0)
+					{
+						SAFE_RELEASE(pBag);
+						pMoniker->AddRef();
+
+						found = true;
+						break;
+					}
+
+					capDevices += var.bstrVal;
+				}
+
+				SAFE_RELEASE(pBag);
+			}
+
+			capDevices += tstring(_T("\r\n"));
+
+			SAFE_RELEASE(pMoniker);
+		}
+
+		SAFE_RELEASE(pClassEnum);
+
+		if (!found)
+		{
+			MessageBox(NULL, capDevices.c_str(), TEXT("Devices..."), MB_OK);
+
 			hr = E_FAIL;
 		}
+
+		//gcap.iNumVCapDevices = uIndex;
 	}
 
 	if (SUCCEEDED(hr))
     {
         // Bind Moniker to a filter object
-        hr = pMoniker->BindToObject(0,0,IID_IBaseFilter, (void**)&pSrc);
+        hr = pMoniker->BindToObject(0,0, IID_IBaseFilter, (void**)&pSrc);
         if (FAILED(hr))
         {
             Msg(TEXT("Couldn't bind moniker to filter object!  hr=0x%x"), hr);
@@ -424,7 +519,7 @@ void RemoveGraphFromRot(DWORD pdwRegister)
 
 void Msg(TCHAR *szFormat, ...)
 {
-    TCHAR szBuffer[1024];  // Large buffer for long filenames or URLs
+    TCHAR szBuffer[2048];  // Large buffer for long filenames or URLs
     const size_t NUMCHARS = sizeof(szBuffer) / sizeof(szBuffer[0]);
     const int LASTCHAR = NUMCHARS - 1;
 
@@ -503,9 +598,75 @@ LRESULT CALLBACK WndMainProc (HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
     return DefWindowProc (hwnd , message, wParam, lParam);
 }
 
+bool parseCmdLine(std::vector<tstring> vArg)
+{
+	try
+	{
+		for (unsigned i = 0; i < vArg.size(); ++i)
+		{
+			if (vArg.at(i).compare(_T("-video-capture-name")) == 0)
+			{
+				g_VCapFriendlyName = vArg.at(++i);
+			}
+			if (vArg.at(i).compare(_T("-video-capture-path")) == 0)
+			{
+				g_VCapDevicePath = vArg.at(++i);
+			}
+			if (vArg.at(i).compare(_T("-video-capture-index")) == 0)
+			{
+				g_VCapIndex = CUniConvert::ts2int(vArg.at(++i));
+			}
+
+			if (vArg.at(i).compare(_T("-h")) == 0 || vArg.at(i).compare(_T("/h")) == 0)
+			{
+				tstring s = _T("");
+
+				s += _T("\r\n");
+				s += _T("-video-capture-index <num of device> OR\r\n");
+				s += _T("-video-capture-name <friendly name of device> OR\r\n");
+				s += _T("-video-capture-path <devicepath of device>\r\n");
+
+				MessageBox(NULL, s.c_str(), TEXT("Help..."), MB_OK);
+				
+				return false;
+			}
+		}
+	}
+	catch (const std::exception&)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+int init(LPSTR lpCmdLine)
+{
+	int ret = 0;
+	int argc = 0;
+	const int len = 1024;
+	LPTSTR* argv = NULL;
+	TCHAR lpCmdLineT[len] = _T("");
+	std::vector<tstring> vArg;
+	
+	CUniConvert::CharToTChar(lpCmdLine, lpCmdLineT, len);
+	argv = CommandLineToArgv(lpCmdLineT, &argc);
+	for (int i = 0; i < argc; ++i)
+	{
+		tstring arg = argv[i];
+		vArg.push_back(arg);
+	}
+
+	if (ret == 0 && !parseCmdLine(vArg)) ret = 1;
+
+	return ret;
+}
+
 
 int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE hInstP, LPSTR lpCmdLine, int nCmdShow)
 {
+	if (init(lpCmdLine) != 0) return 0;
+
     MSG msg={0};
     WNDCLASS wc;
 

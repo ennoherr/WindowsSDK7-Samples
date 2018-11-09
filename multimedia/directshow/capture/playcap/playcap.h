@@ -21,7 +21,7 @@ LRESULT CALLBACK WndMainProc (HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
 
 HRESULT GetInterfaces(void);
 HRESULT CaptureVideo();
-HRESULT FindCaptureDevice(IBaseFilter ** ppSrcFilter);
+HRESULT FindCaptureDevice(IBaseFilter ** ppSrcFilter, const TCHAR *szFriendlyName, const TCHAR *szDevicePath, int iIndex);
 HRESULT SetupVideoWindow(void);
 HRESULT ChangePreviewState(int nShow);
 HRESULT HandleGraphEvent(void);
